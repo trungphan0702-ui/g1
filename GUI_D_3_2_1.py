@@ -155,12 +155,15 @@ class AudioAnalysisToolkitApp:
     # DEVICE REFRESH
     # ---------------------------------------------------------
     def _refresh_hw_devices(self, from_timer: bool = False):
+        if self.master and threading.current_thread() is not threading.main_thread():
+            self.master.after(0, lambda: self._refresh_hw_devices(from_timer=from_timer))
+            return
+
         if sd is None:
             self.hw_log("Sounddevice không khả dụng.")
             return
         try:
             inputs, outputs = devices.list_devices(raise_on_error=True)
-            signature = devices.get_devices_signature()
 
             prev_in_sel = self.hw_input_dev.get()
             prev_out_sel = self.hw_output_dev.get()
@@ -170,48 +173,57 @@ class AudioAnalysisToolkitApp:
             added_out = [d for d in outputs if d not in self._last_output_devices]
             removed_out = [d for d in self._last_output_devices if d not in outputs]
 
-            changed = bool(added_in or removed_in or added_out or removed_out)
-            first_refresh = not self._devices_signature
+            # Always update combobox lists from fresh device query
+            self.cb_in['values'] = inputs
+            self.cb_out['values'] = outputs
 
-            if changed or first_refresh:
-                self.cb_in['values'] = inputs
-                self.cb_out['values'] = outputs
-
-                if added_in:
-                    self.hw_log(f"Added inputs: {', '.join(added_in)}")
-                if removed_in:
-                    self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
-                if added_out:
-                    self.hw_log(f"Added outputs: {', '.join(added_out)}")
-                if removed_out:
-                    self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
-
-                if prev_in_sel in inputs:
-                    self.hw_input_dev.set(prev_in_sel)
-                    self.cb_in.set(prev_in_sel)
-                elif inputs:
-                    self.cb_in.current(0)
-                    self.hw_input_dev.set(inputs[0])
-                    if prev_in_sel:
-                        self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
-
-                if prev_out_sel in outputs:
-                    self.hw_output_dev.set(prev_out_sel)
-                    self.cb_out.set(prev_out_sel)
-                elif outputs:
-                    self.cb_out.current(0)
-                    self.hw_output_dev.set(outputs[0])
-                    if prev_out_sel:
-                        self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
-
-                self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
+            if prev_in_sel in inputs:
+                self.hw_input_dev.set(prev_in_sel)
+                self.cb_in.set(prev_in_sel)
+            elif inputs:
+                self.cb_in.current(0)
+                self.hw_input_dev.set(inputs[0])
+                if prev_in_sel:
+                    self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
             else:
-                if not from_timer:
-                    self.hw_log("Danh sách thiết bị không đổi.")
+                self.hw_input_dev.set("")
+                self.cb_in.set("")
+
+            if prev_out_sel in outputs:
+                self.hw_output_dev.set(prev_out_sel)
+                self.cb_out.set(prev_out_sel)
+            elif outputs:
+                self.cb_out.current(0)
+                self.hw_output_dev.set(outputs[0])
+                if prev_out_sel:
+                    self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
+            else:
+                self.hw_output_dev.set("")
+                self.cb_out.set("")
+
+            selected_in = self.hw_input_dev.get() or "(none)"
+            selected_out = self.hw_output_dev.get() or "(none)"
+
+            if added_in:
+                self.hw_log(f"Added inputs: {', '.join(added_in)}")
+            if removed_in:
+                self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
+            if added_out:
+                self.hw_log(f"Added outputs: {', '.join(added_out)}")
+            if removed_out:
+                self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
+
+            change_detected = bool(added_in or removed_in or added_out or removed_out or not self._devices_signature)
+            if change_detected or not from_timer:
+                self.hw_log(
+                    "Đã làm mới danh sách thiết bị âm thanh. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Chọn input: {selected_in}; chọn output: {selected_out}."
+                )
 
             self._last_input_devices = inputs
             self._last_output_devices = outputs
-            self._devices_signature = signature
+            self._devices_signature = devices.get_devices_signature()
         except Exception as e:
             self.hw_log(f"Lỗi khi lấy thiết bị: {e}")
 
