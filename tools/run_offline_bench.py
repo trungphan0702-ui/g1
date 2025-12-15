@@ -34,7 +34,6 @@ class BenchConfig:
     compressor_knee_db: float = 0.0
     compressor_attack_ms: float = 10.0
     compressor_release_ms: float = 100.0
-    compare_max_lag_ms: Optional[float] = 200.0
 
     def update(self, data: Dict[str, Any]) -> None:
         for key, val in data.items():
@@ -219,10 +218,7 @@ def run_compressor_cases(cfg: BenchConfig, cases_cfg: List[Dict[str, Any]], verb
 
         metrics = compressor.compression_curve(rx, tone_meta["meta"], cfg.fs, freq)
         params = {"freq": freq, "amp_max": amp_max, **comp_params, "applied": apply, "fs": cfg.fs}
-        notes: List[str] = []
-        if metrics.get("no_compression"):
-            notes.append("Detected no compression; thr/ratio reported as passthrough")
-        results.append(BenchCase(name=name, category="compressor", params=params, metrics=metrics, notes=notes))
+        results.append(BenchCase(name=name, category="compressor", params=params, metrics=metrics))
         _log(
             f"[COMP] {name}: thr={metrics['thr_db']}, ratio={metrics['ratio']}, gain_off={metrics['gain_offset_db']:+.2f} dB",
             verbose,
@@ -248,10 +244,7 @@ def run_compare_cases(cfg: BenchConfig, cases_cfg: List[Dict[str, Any]], verbose
             results.append(BenchCase(name=name, category="compare", params={"input": inp, "output": out}, notes=["Skipped: fs mismatch or read error."]))
             continue
 
-        max_lag = None
-        if cfg.compare_max_lag_ms is not None:
-            max_lag = int(cfg.compare_max_lag_ms / 1000.0 * fs_in)
-        aligned_ref, aligned_tgt, lag = compare.align_signals(sig_in, sig_out, max_lag_samples=max_lag)
+        aligned_ref, aligned_tgt, lag = compare.align_signals(sig_in, sig_out)
         gain_matched, gain_error_db = compare.gain_match(aligned_ref, aligned_tgt)
         metrics = compare.residual_metrics(aligned_ref, gain_matched, fs_in, freq, hmax)
         metrics.update({"latency_samples": lag, "latency_ms": lag / fs_in * 1000.0, "gain_error_db": gain_error_db})
