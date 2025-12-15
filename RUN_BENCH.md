@@ -40,7 +40,7 @@ Khi gửi lại cho tôi, vui lòng đính kèm:
 - **THD**: `thd_cases` cho phép chọn `type: synthetic` hoặc `type: file` (`input_wav`). Có thể thêm harmonic bằng `harmonic.order`, `harmonic.level_db`. Các tham số FFT: `thd_window`, `thd_nfft`, `thd_fund_band_bins`, `thd_max_h`.
 - **Attack/Release**: set `freq`, `amp`, `duration`, `rms_win_ms` trong `attack_release_cases`.
 - **Compressor**: `compressor_cases` hỗ trợ `apply_compressor: true/false` và các tham số threshold/ratio/makeup/knee/attack/release.
-- **Compare**: đặt `input_wav` và `output_wav` cho từng case trong `compare_cases`; dùng `compare_max_lag_ms` để giới hạn cửa sổ tìm độ trễ (mặc định 200 ms).
+- **Compare**: đặt `input_wav` và `output_wav` cho từng case trong `compare_cases`.
 
 ## 5. Ví dụ output rút gọn
 

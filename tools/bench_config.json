@@ -15,8 +15,7 @@
     "compressor_makeup_db": 0.0,
     "compressor_knee_db": 0.0,
     "compressor_attack_ms": 10.0,
-    "compressor_release_ms": 100.0,
-    "compare_max_lag_ms": 200.0
+    "compressor_release_ms": 100.0
   },
   "thd_cases": [
     {
