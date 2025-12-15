@@ -2,6 +2,7 @@ from typing import List, Tuple, Optional
 
 import json
 import hashlib
+from typing import List, Optional, Tuple
 
 try:  # Optional dependency: sounddevice may be absent in offline environments
     import sounddevice as sd

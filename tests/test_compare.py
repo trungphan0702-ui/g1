@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 from analysis import compare
 
@@ -47,3 +46,11 @@ def test_align_handles_length_mismatch():
     # gain match expectation: overlap region equals ones
     assert np.allclose(a_ref, 1)
     assert np.allclose(a_tgt, 1)
+
+
+def test_align_prefers_onset_detection():
+    ref = np.concatenate([np.zeros(10), np.ones(30)])
+    tgt = np.concatenate([np.zeros(22), np.ones(30)])
+    a_ref, a_tgt, lag = compare.align_signals(ref, tgt, prefer_onset=True, max_lag_samples=50)
+    assert lag == 12
+    assert np.allclose(a_ref, a_tgt)

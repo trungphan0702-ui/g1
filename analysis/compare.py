@@ -3,17 +3,17 @@ from typing import Dict, Any, Tuple, Optional
 from . import thd
 
 
+def _to_mono(x: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float32)
+    return arr if arr.ndim == 1 else arr[:, 0]
+
+
 def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     mag = np.abs(x)
     if len(mag) < win:
         return mag
     kernel = np.ones(win) / float(win)
     return np.convolve(mag, kernel, mode='same')
-
-
-def align_signals(ref: np.ndarray, target: np.ndarray, max_lag_samples: int = None) -> Tuple[np.ndarray, np.ndarray, int]:
-    ref_mono = ref if ref.ndim == 1 else ref[:, 0]
-    tgt_mono = target if target.ndim == 1 else target[:, 0]
 
 
 def align_signals(
@@ -24,12 +24,18 @@ def align_signals(
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Align signals using envelope cross-correlation with optional lag bounds."""
 
-    corr = np.correlate(tgt_pad, ref_pad, mode='full')
-    lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    ref_raw = _to_mono(ref)
+    tgt_raw = _to_mono(target)
+    ref_mono = _smooth_abs(ref_raw)
+    tgt_mono = _smooth_abs(tgt_raw)
+
+    corr = np.correlate(tgt_mono, ref_mono, mode='full')
+    center = len(ref_mono) - 1
+    lag_corr = int(np.argmax(corr) - center)
     if max_lag_samples is not None:
-        window = slice(len(corr) // 2 - max_lag_samples, len(corr) // 2 + max_lag_samples + 1)
+        window = slice(max(0, center - max_lag_samples), min(len(corr), center + max_lag_samples + 1))
         subcorr = corr[window]
-        lag_corr = int(np.argmax(subcorr) + window.start - (len(ref_pad) - 1))
+        lag_corr = int(np.argmax(subcorr) + window.start - center)
 
     def onset_idx(raw: np.ndarray) -> int:
         abs_raw = np.abs(raw)
@@ -37,7 +43,7 @@ def align_signals(
         idxs = np.nonzero(abs_raw > thresh)[0]
         return int(idxs[0]) if idxs.size else 0
 
-    lag_onset = onset_idx(tgt_mono) - onset_idx(ref_mono)
+    lag_onset = onset_idx(tgt_raw) - onset_idx(ref_raw)
     lag = lag_onset if prefer_onset and lag_onset != 0 else lag_corr
 
     if lag >= 0:
