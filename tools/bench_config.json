@@ -15,29 +15,28 @@
     "compressor_makeup_db": 0.0,
     "compressor_knee_db": 0.0,
     "compressor_attack_ms": 10.0,
-    "compressor_release_ms": 100.0,
-    "compare_max_lag_ms": 200.0
+    "compressor_release_ms": 100.0
   },
   "thd_cases": [
     {
       "name": "thd_clean_sine",
       "type": "synthetic",
-      "expected": {"thdn_db_max": -40}
+      "expected": { "thdn_db_max": -40 }
     },
     {
       "name": "thd_distorted_sine",
       "type": "synthetic",
-      "harmonic": {"order": 2, "level_db": -20},
-      "expected": {"thd_db_min": -40}
+      "harmonic": { "order": 2, "level_db": -20 },
+      "expected": { "thd_db_min": -40 }
     },
     {
       "name": "thd_from_file",
       "type": "file",
-      "input_wav": ""
+      "input_wav": "C:/Users/HP/OneDrive - VietNam National University - HCM INTERNATIONAL UNIVERSITY/Documents/Desktop/1/2/_sóng_sin/Test_Compressor/sine_1kHz_original.wav"
     }
   ],
   "attack_release_cases": [
-    {"name": "attack_release_default"}
+    { "name": "attack_release_default" }
   ],
   "compressor_cases": [
     {
@@ -52,8 +51,8 @@
   "compare_cases": [
     {
       "name": "compare_example",
-      "input_wav": "",
-      "output_wav": ""
+      "input_wav": "C:/Users/HP/OneDrive - VietNam National University - HCM INTERNATIONAL UNIVERSITY/Documents/Desktop/1/2/_sóng_sin/Test_Compressor/sine_1kHz_original.wav",
+      "output_wav": "C:/Users/HP/OneDrive - VietNam National University - HCM INTERNATIONAL UNIVERSITY/Documents/Desktop/1/2/_sóng_sin/Test_Compressor/compressed_6_ratio10_thr-15dB_makeup0dB.wav"
     }
   ]
 }
