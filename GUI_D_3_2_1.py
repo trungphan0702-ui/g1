@@ -164,7 +164,6 @@ class AudioAnalysisToolkitApp:
             return
         try:
             inputs, outputs = devices.list_devices(raise_on_error=True)
-            signature = devices.get_devices_signature()
 
             prev_in_sel = self.hw_input_dev.get()
             prev_out_sel = self.hw_output_dev.get()
@@ -226,7 +225,7 @@ class AudioAnalysisToolkitApp:
 
             self._last_input_devices = inputs
             self._last_output_devices = outputs
-            self._devices_signature = signature
+            self._devices_signature = devices.get_devices_signature()
         except Exception as e:
             self.hw_log(f"Lỗi khi lấy thiết bị: {e}")
 
