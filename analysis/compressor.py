@@ -141,19 +141,3 @@ def compression_curve(sig: np.ndarray, meta: Dict[str, Any], fs: int, freq: floa
         'thr_db': thr,
         'ratio': ratio,
     }
-
-
-def compare_compression(input_sig: np.ndarray, output_sig: np.ndarray, fs: int, freq: float) -> Dict[str, Any]:
-    meta = build_stepped_tone(freq, fs)
-    base_curve = compression_curve(input_sig, meta['meta'], fs, freq)
-    out_curve = compression_curve(output_sig, meta['meta'], fs, freq)
-    delta_thr = out_curve['thr_db'] - base_curve['thr_db'] if np.isfinite(out_curve['thr_db']) and np.isfinite(base_curve['thr_db']) else np.nan
-    delta_ratio = out_curve['ratio'] - base_curve['ratio']
-    delta_gain = out_curve['gain_offset_db'] - base_curve['gain_offset_db']
-    return {
-        'input': base_curve,
-        'output': out_curve,
-        'delta_thr': delta_thr,
-        'delta_ratio': delta_ratio,
-        'delta_gain': delta_gain,
-    }
