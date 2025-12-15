@@ -139,3 +139,4 @@ def analyze_compressor_capture(sig: np.ndarray, meta: Dict[str, Any], fs: int) -
         "thr_db": float(thr),
         "ratio": float(ratio),
     }
+*** End Patch
