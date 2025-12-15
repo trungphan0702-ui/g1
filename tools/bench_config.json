@@ -1,0 +1,82 @@
+{
+  "defaults": {
+    "fs": 48000,
+    "freq": 1000,
+    "amp": 0.7,
+    "duration": 2.0,
+    "thd_max_h": 5,
+    "thd_fund_band_bins": 2,
+    "thd_window": "hann",
+    "thd_nfft": null,
+    "attack_rms_win_ms": 5,
+    "compressor_amp_max": 1.0,
+    "compressor_threshold_db": -12.0,
+    "compressor_ratio": 4.0,
+    "compressor_makeup_db": 0.0,
+    "compressor_knee_db": 0.0,
+    "compressor_attack_ms": 10.0,
+    "compressor_release_ms": 100.0,
+    "compare_max_lag_ms": 200.0,
+    "compare_trim_start": 0.05,
+    "compare_trim_end": 0.95,
+    "compare_verdict_thresholds": {
+      "snr_good_db": 60.0,
+      "snr_ok_db": 40.0,
+      "gain_db_good": 1.0,
+      "gain_db_bad": 3.0,
+      "fr_dev_good": 1.0,
+      "fr_dev_bad": 3.0,
+      "thd_delta_good": 1.5,
+      "thd_delta_bad": 4.0,
+      "clipping_max_good": 0,
+      "clipping_max_bad": 10
+    }
+  },
+  "thd_cases": [
+    {
+      "name": "thd_clean_sine",
+      "type": "synthetic",
+      "expected": {"thdn_db_max": -40}
+    },
+    {
+      "name": "thd_distorted_sine",
+      "type": "synthetic",
+      "harmonic": {"order": 2, "level_db": -20},
+      "expected": {"thd_db_min": -40}
+    },
+    {
+      "name": "thd_from_file",
+      "type": "file",
+      "input_wav": ""
+    }
+  ],
+  "attack_release_cases": [
+    {"name": "attack_release_default"}
+  ],
+  "compressor_cases": [
+    {
+      "name": "compressor_curve_default",
+      "apply_compressor": false
+    },
+    {
+      "name": "compressor_curve_with_model",
+      "apply_compressor": true
+    }
+  ],
+  "compare_cases": [
+    {
+      "name": "compare_synthetic_example",
+      "type": "synthetic",
+      "duration": 2.0,
+      "delay_ms": 4.0,
+      "gain_db": -6.0,
+      "noise_dbfs": -55.0,
+      "harmonic": {"order": 3, "level_db": -30}
+    },
+    {
+      "name": "compare_example",
+      "input_wav": "",
+      "output_wav": ""
+    }
+  ]
+}

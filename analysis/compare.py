@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from . import thd
 
 
@@ -11,21 +11,35 @@ def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     return np.convolve(mag, kernel, mode='same')
 
 
-def align_signals(ref: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
-    ref_mono = ref if ref.ndim == 1 else ref[:, 0]
-    tgt_mono = target if target.ndim == 1 else target[:, 0]
+def _to_mono(sig: np.ndarray) -> np.ndarray:
+    return sig if sig.ndim == 1 else np.mean(sig, axis=1)
 
-    ref_env = _smooth_abs(ref_mono)
-    tgt_env = _smooth_abs(tgt_mono)
 
-    pad = len(ref_env)
-    ref_pad = np.concatenate([ref_env, np.zeros(pad)])
-    tgt_pad = np.concatenate([tgt_env, np.zeros(pad)])
+def align_signals(
+    ref: np.ndarray,
+    target: np.ndarray,
+    max_lag_samples: Optional[int] = None,
+    prefer_onset: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    """Align signals using envelope cross-correlation with optional lag bounds."""
 
-    corr = np.correlate(tgt_pad, ref_pad, mode='full')
-    lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    ref_mono = _to_mono(ref).astype(float)
+    tgt_mono = _to_mono(target).astype(float)
 
-    # Onset-based estimate to stabilize noisy cross-correlations using raw magnitude
+    # Remove DC and soften edges
+    ref_proc = _smooth_abs(ref_mono - np.mean(ref_mono))
+    tgt_proc = _smooth_abs(tgt_mono - np.mean(tgt_mono))
+
+    corr = np.correlate(tgt_proc, ref_proc, mode='full')
+    center = len(ref_proc) - 1
+    if max_lag_samples is None:
+        max_lag_samples = min(len(ref_proc), len(tgt_proc)) - 1
+    start = max(center - max_lag_samples, 0)
+    end = min(center + max_lag_samples + 1, len(corr))
+    window = slice(start, end)
+    subcorr = corr[window]
+    lag_corr = int(np.argmax(subcorr) + window.start - center)
+
     def onset_idx(raw: np.ndarray) -> int:
         abs_raw = np.abs(raw)
         thresh = 0.1 * float(np.max(abs_raw) + 1e-12)
@@ -33,83 +47,198 @@ def align_signals(ref: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.n
         return int(idxs[0]) if idxs.size else 0
 
     lag_onset = onset_idx(tgt_mono) - onset_idx(ref_mono)
-    lag = lag_onset if lag_onset != 0 else lag_corr
+    lag = lag_onset if prefer_onset and lag_onset != 0 else lag_corr
 
     if lag >= 0:
-        aligned_ref = ref_pad[: len(ref_pad) - lag]
-        aligned_tgt = tgt_pad[lag : lag + len(aligned_ref)]
+        aligned_ref = ref[: len(ref) - lag]
+        aligned_tgt = target[lag : lag + len(aligned_ref)]
     else:
-        aligned_tgt = tgt_pad[: len(tgt_pad) + lag]
-        aligned_ref = ref_pad[-lag : -lag + len(aligned_tgt)]
+        aligned_ref = ref[-lag : -lag + len(target)]
+        aligned_tgt = target[: len(aligned_ref)]
 
     min_len = min(len(aligned_ref), len(aligned_tgt))
     return aligned_ref[:min_len], aligned_tgt[:min_len], lag
 
 
-def gain_match(ref: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, float]:
-    if ref.ndim > 1:
-        ref_mono = ref[:, 0]
-    else:
-        ref_mono = ref
-    if target.ndim > 1:
-        tgt_mono = target[:, 0]
-    else:
-        tgt_mono = target
-    rms_ref = np.sqrt(np.mean(ref_mono ** 2) + 1e-12)
-    rms_tgt = np.sqrt(np.mean(tgt_mono ** 2) + 1e-12)
+def gain_match(
+    ref: np.ndarray,
+    target: np.ndarray,
+    stable_region: Tuple[float, float] = (0.05, 0.95),
+) -> Tuple[np.ndarray, float]:
+    ref_mono = _to_mono(ref)
+    tgt_mono = _to_mono(target)
+    n = len(ref_mono)
+    s, e = stable_region
+    s_idx = int(n * s)
+    e_idx = int(n * e)
+    if e_idx <= s_idx:
+        s_idx, e_idx = 0, n
+    ref_slice = ref_mono[s_idx:e_idx]
+    tgt_slice = tgt_mono[s_idx:e_idx]
+    rms_ref = np.sqrt(np.mean(ref_slice ** 2) + 1e-12)
+    rms_tgt = np.sqrt(np.mean(tgt_slice ** 2) + 1e-12)
     gain = rms_ref / max(rms_tgt, 1e-12)
-    return target * gain, 20 * np.log10(1.0 / gain + 1e-12)
+    gain_db = 20 * np.log10(1.0 / gain + 1e-12)
+    return target * gain, gain_db
 
 
-def residual_metrics(ref: np.ndarray, tgt: np.ndarray, fs: int, freq: float, hmax: int = 5) -> Dict[str, Any]:
-    residual = tgt - ref
-    res_rms = np.sqrt(np.mean(residual ** 2) + 1e-12)
-    ref_rms = np.sqrt(np.mean(ref ** 2) + 1e-12)
-    snr = 20 * np.log10(ref_rms / res_rms + 1e-12)
-    noise_floor = 20 * np.log10(res_rms + 1e-12)
-    thd_ref = thd.compute_thd(ref, fs, freq, hmax)
-    thd_tgt = thd.compute_thd(tgt, fs, freq, hmax)
-    thd_delta = thd_tgt['thd_db'] - thd_ref['thd_db']
+def _freq_response_delta(ref: np.ndarray, tgt: np.ndarray, fs: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     window = np.hanning(len(ref))
     spec_ref = np.fft.rfft(ref * window)
     spec_tgt = np.fft.rfft(tgt * window)
     mag_ref = 20 * np.log10(np.abs(spec_ref) + 1e-12)
     mag_tgt = 20 * np.log10(np.abs(spec_tgt) + 1e-12)
-    fr_dev = mag_tgt - mag_ref
-    fr_mean_dev = float(np.median(fr_dev))
-    hum_bins = []
     freqs = np.fft.rfftfreq(len(ref), 1 / fs)
+    return freqs, mag_ref, mag_tgt
+
+
+def _detect_hum_peaks(freqs: np.ndarray, mag: np.ndarray) -> list:
+    hum_bins = []
     for base in (50, 60):
-        for mul in range(1, 5):
+        for mul in range(1, 6):
             f = base * mul
             idx = np.argmin(np.abs(freqs - f))
-            hum_bins.append({'freq': f, 'level_db': float(mag_tgt[idx])})
-    return {
-        'residual_rms_dbfs': 20 * np.log10(res_rms + 1e-12),
-        'snr_db': snr,
-        'noise_floor_dbfs': noise_floor,
-        'thd_ref_db': thd_ref['thd_db'],
-        'thd_tgt_db': thd_tgt['thd_db'],
-        'thd_delta_db': thd_delta,
-        'fr_dev_median_db': fr_mean_dev,
-        'hum_peaks': hum_bins,
-        'residual': residual,
+            hum_bins.append({"freq": float(f), "level_db": float(mag[idx])})
+    return hum_bins
+
+
+def residual_metrics(
+    ref: np.ndarray,
+    tgt: np.ndarray,
+    fs: int,
+    freq: float,
+    hmax: int = 5,
+    stable_region: Tuple[float, float] = (0.05, 0.95),
+    include_residual: bool = False,
+) -> Dict[str, Any]:
+    n = min(len(ref), len(tgt))
+    ref = ref[:n]
+    tgt = tgt[:n]
+
+    s, e = stable_region
+    s_idx = int(n * s)
+    e_idx = int(n * e) if int(n * e) > s_idx else n
+
+    ref_core = ref[s_idx:e_idx]
+    tgt_core = tgt[s_idx:e_idx]
+    residual = tgt_core - ref_core
+
+    res_rms = np.sqrt(np.mean(residual ** 2) + 1e-12)
+    ref_rms = np.sqrt(np.mean(ref_core ** 2) + 1e-12)
+    snr = 20 * np.log10(ref_rms / res_rms + 1e-12)
+    noise_floor = 20 * np.log10(res_rms + 1e-12)
+
+    thd_ref = thd.compute_thd(ref_core, fs, freq, hmax)
+    thd_tgt = thd.compute_thd(tgt_core, fs, freq, hmax)
+    thd_delta = thd_tgt["thd_db"] - thd_ref["thd_db"]
+
+    freqs, mag_ref, mag_tgt = _freq_response_delta(ref_core, tgt_core, fs)
+    fr_dev = mag_tgt - mag_ref
+    band = (freqs >= 20) & (freqs <= 20000)
+    fr_band = fr_dev[band]
+    fr_dev_median = float(np.median(fr_band)) if fr_band.size else float(np.median(fr_dev))
+    fr_dev_max = float(np.max(np.abs(fr_band))) if fr_band.size else float(np.max(np.abs(fr_dev)))
+
+    hum_peaks = _detect_hum_peaks(freqs, mag_tgt)
+
+    clipping = int(np.sum(np.abs(tgt_core) >= 0.999))
+
+    metrics: Dict[str, Any] = {
+        "residual_rms_dbfs": 20 * np.log10(res_rms + 1e-12),
+        "snr_db": snr,
+        "noise_floor_dbfs": noise_floor,
+        "thd_ref_db": thd_ref["thd_db"],
+        "thd_tgt_db": thd_tgt["thd_db"],
+        "thd_delta_db": thd_delta,
+        "fr_dev_median_db": fr_dev_median,
+        "fr_dev_max_db": fr_dev_max,
+        "hum_peaks": hum_peaks,
+        "clipping_samples": clipping,
     }
+    if include_residual:
+        metrics["residual"] = residual
+    return metrics
 
 
-def compare_signals(ref: np.ndarray, target: np.ndarray, fs: int, freq: float, hmax: int = 5) -> Dict[str, Any]:
+def classify_quality(
+    metrics: Dict[str, Any],
+    thresholds: Optional[Dict[str, float]] = None,
+) -> Tuple[str, list]:
+    th = thresholds or {}
+    reasons = []
+
+    snr = metrics.get("snr_db", -np.inf)
+    gain_err = abs(metrics.get("gain_error_db", 0.0))
+    fr_max = metrics.get("fr_dev_max_db", 0.0)
+    thd_delta = abs(metrics.get("thd_delta_db", 0.0))
+    clip = metrics.get("clipping_samples", 0)
+
+    def bound(key: str, default: float) -> float:
+        return float(th.get(key, default))
+
+    status = "GOOD"
+    if snr < bound("snr_good_db", 60):
+        status = "OK"
+        reasons.append(f"SNR {snr:.1f} dB < good {bound('snr_good_db', 60):.1f} dB")
+    if snr < bound("snr_ok_db", 40):
+        status = "BAD"
+        reasons.append(f"SNR {snr:.1f} dB < ok {bound('snr_ok_db', 40):.1f} dB")
+
+    if gain_err > bound("gain_db_good", 1.0):
+        status = "OK" if status == "GOOD" else status
+        reasons.append(f"Gain err {gain_err:.2f} dB > good {bound('gain_db_good', 1.0):.2f} dB")
+    if gain_err > bound("gain_db_bad", 3.0):
+        status = "BAD"
+        reasons.append(f"Gain err {gain_err:.2f} dB > bad {bound('gain_db_bad', 3.0):.2f} dB")
+
+    if fr_max > bound("fr_dev_good", 1.0):
+        status = "OK" if status == "GOOD" else status
+        reasons.append(f"FR dev {fr_max:.2f} dB > good {bound('fr_dev_good', 1.0):.2f} dB")
+    if fr_max > bound("fr_dev_bad", 3.0):
+        status = "BAD"
+        reasons.append(f"FR dev {fr_max:.2f} dB > bad {bound('fr_dev_bad', 3.0):.2f} dB")
+
+    if thd_delta > bound("thd_delta_good", 1.5):
+        status = "OK" if status == "GOOD" else status
+        reasons.append(f"THD Δ {thd_delta:.2f} dB > good {bound('thd_delta_good', 1.5):.2f} dB")
+    if thd_delta > bound("thd_delta_bad", 4.0):
+        status = "BAD"
+        reasons.append(f"THD Δ {thd_delta:.2f} dB > bad {bound('thd_delta_bad', 4.0):.2f} dB")
+
+    if clip > bound("clipping_max_good", 0):
+        status = "OK" if status == "GOOD" else status
+        reasons.append(f"Clipping {clip} samples")
+    if clip > bound("clipping_max_bad", 10):
+        status = "BAD"
+        reasons.append(f"Clipping {clip} samples > {bound('clipping_max_bad', 10)}")
+
+    return status, reasons
+
+
+def compare_signals(
+    ref: np.ndarray,
+    target: np.ndarray,
+    fs: int,
+    freq: float,
+    hmax: int = 5,
+    max_lag_samples: Optional[int] = None,
+    stable_region: Tuple[float, float] = (0.05, 0.95),
+    thresholds: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
     """Align, gain-match, and measure residual metrics between two signals."""
 
-    aligned_ref, aligned_tgt, lag = align_signals(ref, target)
-    gain_matched, gain_error_db = gain_match(aligned_ref, aligned_tgt)
-    metrics = residual_metrics(aligned_ref, gain_matched, fs, freq, hmax)
+    aligned_ref, aligned_tgt, lag = align_signals(ref, target, max_lag_samples=max_lag_samples)
+    gain_matched, gain_error_db = gain_match(aligned_ref, aligned_tgt, stable_region=stable_region)
+    metrics = residual_metrics(aligned_ref, gain_matched, fs, freq, hmax, stable_region=stable_region)
 
     latency_ms = lag / fs * 1000.0
     metrics.update(
         {
-            'latency_samples': lag,
-            'latency_ms': latency_ms,
-            'gain_error_db': gain_error_db,
+            "latency_samples": lag,
+            "latency_ms": latency_ms,
+            "gain_error_db": gain_error_db,
         }
     )
+    verdict, reasons = classify_quality(metrics, thresholds=thresholds)
+    metrics.update({"verdict": verdict, "verdict_reasons": reasons})
     return metrics
