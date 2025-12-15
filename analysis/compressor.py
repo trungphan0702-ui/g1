@@ -119,10 +119,12 @@ def compression_curve(sig: np.ndarray, meta: Dict[str, Any], fs: int, freq: floa
     slope_tol, spread_tol = 0.05, 1.0
     no_compression = (abs(a_all - 1.0) < slope_tol) and ((adj_diff.max() - adj_diff.min()) < spread_tol)
 
-    if no_compression:
+    mask = adj_diff < -0.5
+    # If nothing crosses -0.5 dB after makeup removal, treat as no-compression to avoid NaNs
+    if no_compression or np.count_nonzero(mask) < 2:
         thr, ratio = np.nan, 1.0
+        no_compression = True
     else:
-        mask = adj_diff < -0.5
         x, y = rms_in_db[mask], adj_out_db[mask]
         a, b = np.polyfit(x, y, 1)
         ratio = 1.0 / max(a, 1e-12)
