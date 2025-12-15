@@ -11,8 +11,9 @@ def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     return np.convolve(mag, kernel, mode='same')
 
 
-def _to_mono(sig: np.ndarray) -> np.ndarray:
-    return sig if sig.ndim == 1 else np.mean(sig, axis=1)
+def align_signals(ref: np.ndarray, target: np.ndarray, max_lag_samples: int = None) -> Tuple[np.ndarray, np.ndarray, int]:
+    ref_mono = ref if ref.ndim == 1 else ref[:, 0]
+    tgt_mono = target if target.ndim == 1 else target[:, 0]
 
 
 def align_signals(
@@ -23,22 +24,12 @@ def align_signals(
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Align signals using envelope cross-correlation with optional lag bounds."""
 
-    ref_mono = _to_mono(ref).astype(float)
-    tgt_mono = _to_mono(target).astype(float)
-
-    # Remove DC and soften edges
-    ref_proc = _smooth_abs(ref_mono - np.mean(ref_mono))
-    tgt_proc = _smooth_abs(tgt_mono - np.mean(tgt_mono))
-
-    corr = np.correlate(tgt_proc, ref_proc, mode='full')
-    center = len(ref_proc) - 1
-    if max_lag_samples is None:
-        max_lag_samples = min(len(ref_proc), len(tgt_proc)) - 1
-    start = max(center - max_lag_samples, 0)
-    end = min(center + max_lag_samples + 1, len(corr))
-    window = slice(start, end)
-    subcorr = corr[window]
-    lag_corr = int(np.argmax(subcorr) + window.start - center)
+    corr = np.correlate(tgt_pad, ref_pad, mode='full')
+    lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    if max_lag_samples is not None:
+        window = slice(len(corr) // 2 - max_lag_samples, len(corr) // 2 + max_lag_samples + 1)
+        subcorr = corr[window]
+        lag_corr = int(np.argmax(subcorr) + window.start - (len(ref_pad) - 1))
 
     def onset_idx(raw: np.ndarray) -> int:
         abs_raw = np.abs(raw)
