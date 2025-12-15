@@ -14,6 +14,7 @@ except Exception:
 from analysis import attack_release, compare, compressor, thd
 from audio import devices, playrec, wav_io
 from utils.logging import UILogger
+from utils.plot_windows import PlotWindowManager
 from utils.threading import run_in_thread
 
 # ============================================================
@@ -74,6 +75,7 @@ class AudioAnalysisToolkitApp:
         self.stop_event = threading.Event()
         self.worker = None
         self.logger = UILogger(self.hw_log)
+        self.plot_manager = PlotWindowManager(master, log=self.hw_log)
 
         self._configure_style()
         self._build_ui()
@@ -110,6 +112,10 @@ class AudioAnalysisToolkitApp:
 
     def request_stop(self):
         self.stop_event.set()
+
+    def _schedule_plot(self, func, *args, **kwargs):
+        if self.master:
+            self.master.after(0, lambda: func(*args, **kwargs))
 
     def _require_sounddevice(self):
         if sd is None:
@@ -374,6 +380,7 @@ class AudioAnalysisToolkitApp:
         self.hw_log(f"THD ≈ {res['thd_percent']:.4f}% ({res['thd_db']:.2f} dB)")
         for h, v in res['harmonics_dbc'].items():
             self.hw_log(f"H{h}: {v:.2f} dBc")
+        self._schedule_plot(self.plot_manager.open_thd_snapshot, recorded, fs, res, freq, hmax)
 
     def run_hw_compressor(self):
         if not self._require_sounddevice():
@@ -394,6 +401,7 @@ class AudioAnalysisToolkitApp:
             self.hw_log(f"Path gain ≈ {curve['gain_offset_db']:+.2f} dB (không thấy nén)")
         else:
             self.hw_log(f"Threshold ≈ {curve['thr_db']:.2f} dBFS | Ratio ≈ {curve['ratio']:.2f}:1 | Gain offset {curve['gain_offset_db']:+.2f} dB")
+        self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Captured", curve)])
 
     def run_hw_attack_release(self):
         if not self._require_sounddevice():
@@ -411,6 +419,7 @@ class AudioAnalysisToolkitApp:
             return
         times = attack_release.attack_release_times(recorded, fs, rms_win)
         self.hw_log(f"Attack ≈ {times['attack_ms']:.1f} ms | Release ≈ {times['release_ms']:.1f} ms")
+        self._schedule_plot(self.plot_manager.open_ar_snapshot, recorded, fs, rms_win, times)
 
     # ---------------------------------------------------------
     # LOOPBACK & FILE OPERATIONS
@@ -455,6 +464,7 @@ class AudioAnalysisToolkitApp:
         if mode == 'thd':
             res = thd.compute_thd(data, fs, freq, hmax)
             self.hw_log(f"[Single] THD {os.path.basename(path)}: {res['thd_percent']:.4f}% ({res['thd_db']:.2f} dB)")
+            self._schedule_plot(self.plot_manager.open_thd_snapshot, data, fs, res, freq, hmax)
         elif mode == 'compressor':
             meta = compressor.build_stepped_tone(freq, fs)
             res = compressor.compression_curve(data, meta['meta'], fs, freq)
@@ -462,9 +472,11 @@ class AudioAnalysisToolkitApp:
                 self.hw_log("[Single] Không phát hiện nén.")
             else:
                 self.hw_log(f"[Single] Thr {res['thr_db']:.2f} dBFS | Ratio {res['ratio']:.2f}:1 | Gain {res['gain_offset_db']:+.2f} dB")
+            self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Captured", res)])
         elif mode == 'ar':
             times = attack_release.attack_release_times(data, fs, rms_win)
             self.hw_log(f"[Single] Attack {times['attack_ms']:.1f} ms | Release {times['release_ms']:.1f} ms")
+            self._schedule_plot(self.plot_manager.open_ar_snapshot, data, fs, rms_win, times)
 
     def _log_residual_metrics(self, metrics, latency_ms, gain_error_db):
         self.hw_log(f"Latency: {latency_ms:.2f} ms | Gain error: {gain_error_db:+.2f} dB")
@@ -495,6 +507,8 @@ class AudioAnalysisToolkitApp:
         self._log_residual_metrics(metrics, latency_ms, gain_err)
         if mode == 'thd':
             self.hw_log(f"THD input: {metrics['thd_ref_db']:.2f} dB | received: {metrics['thd_tgt_db']:.2f} dB")
+            res_out = thd.compute_thd(a_out, fs_in, freq, hmax)
+            self._schedule_plot(self.plot_manager.open_thd_snapshot, a_out, fs_in, res_out, freq, hmax)
         elif mode == 'compressor':
             meta = compressor.build_stepped_tone(freq, fs_in)
             base_curve = compressor.compression_curve(a_in, meta['meta'], fs_in, freq)
@@ -502,10 +516,12 @@ class AudioAnalysisToolkitApp:
             self.hw_log(f"Input Thr {base_curve['thr_db']:.2f} | Ratio {base_curve['ratio']:.2f}")
             self.hw_log(f"Received Thr {out_curve['thr_db']:.2f} | Ratio {out_curve['ratio']:.2f}")
             self.hw_log(f"ΔThr {out_curve['thr_db'] - base_curve['thr_db']:+.2f} dB | ΔRatio {out_curve['ratio'] - base_curve['ratio']:+.2f}")
+            self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Input", base_curve), ("Output", out_curve)])
         elif mode == 'ar':
             cmp_ar = attack_release.compare_attack_release(a_in, a_out, fs_in, rms_win)
             self.hw_log(f"Attack in/out: {cmp_ar['input']['attack_ms']:.1f} / {cmp_ar['output']['attack_ms']:.1f} ms | Δ {cmp_ar['delta_attack']:+.1f} ms")
             self.hw_log(f"Release in/out: {cmp_ar['input']['release_ms']:.1f} / {cmp_ar['output']['release_ms']:.1f} ms | Δ {cmp_ar['delta_release']:+.1f} ms")
+            self._schedule_plot(self.plot_manager.open_ar_snapshot, a_out, fs_in, rms_win, cmp_ar['output'])
 
     def analyze_loopback(self, mode: str):
         inp = self.state.get('input_file') or self.hw_loop_file.get()

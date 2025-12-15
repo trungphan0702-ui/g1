@@ -11,7 +11,7 @@ def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     return np.convolve(mag, kernel, mode='same')
 
 
-def align_signals(ref: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.ndarray, int]:
+def align_signals(ref: np.ndarray, target: np.ndarray, max_lag_samples: int = None) -> Tuple[np.ndarray, np.ndarray, int]:
     ref_mono = ref if ref.ndim == 1 else ref[:, 0]
     tgt_mono = target if target.ndim == 1 else target[:, 0]
 
@@ -24,6 +24,10 @@ def align_signals(ref: np.ndarray, target: np.ndarray) -> Tuple[np.ndarray, np.n
 
     corr = np.correlate(tgt_pad, ref_pad, mode='full')
     lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    if max_lag_samples is not None:
+        window = slice(len(corr) // 2 - max_lag_samples, len(corr) // 2 + max_lag_samples + 1)
+        subcorr = corr[window]
+        lag_corr = int(np.argmax(subcorr) + window.start - (len(ref_pad) - 1))
 
     # Onset-based estimate to stabilize noisy cross-correlations using raw magnitude
     def onset_idx(raw: np.ndarray) -> int:
