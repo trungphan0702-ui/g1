@@ -22,7 +22,7 @@ def list_devices(raise_on_error: bool = False) -> Tuple[List[str], List[str]]:
     if sd is None:
         return inputs, outputs
     try:
-        for i, dev in enumerate(sd.query_devices()):
+        for i, dev in enumerate(_query_devices(refresh=refresh)):
             name = f"{i}: {dev['name']}"
             if dev.get('max_input_channels', 0) > 0:
                 inputs.append(name)

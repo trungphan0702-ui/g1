@@ -114,7 +114,17 @@ class AudioAnalysisToolkitApp:
         if self.worker and self.worker.is_alive():
             self.hw_log("Một tác vụ khác đang chạy. Vui lòng chờ...")
             return
-        self.worker = run_in_thread(target, self.stop_event, name=name)
+        def wrapped():
+            try:
+                target()
+            except Exception as exc:
+                import traceback
+
+                self.hw_log(f"[{name or target.__name__}] lỗi: {exc}")
+                for line in traceback.format_exc().strip().splitlines():
+                    self.hw_log(line)
+
+        self.worker = run_in_thread(wrapped, self.stop_event, name=name)
 
     def request_stop(self):
         self.stop_event.set()
@@ -567,7 +577,8 @@ class AudioAnalysisToolkitApp:
             return
         sig_in = np.asarray(sig_in, dtype=np.float32)
         sig_out = np.asarray(sig_out, dtype=np.float32)
-        a_in, a_out, lag = compare.align_signals(sig_in, sig_out)
+        max_lag = int(fs_in * 5)  # cap search to ~5s to avoid runaway correlation
+        a_in, a_out, lag = compare.align_signals(sig_in, sig_out, max_lag_samples=max_lag)
         a_out, gain_err = compare.gain_match(a_in, a_out)
         latency_ms = lag / fs_in * 1000.0
         metrics = compare.residual_metrics(a_in, a_out, fs_in, freq, hmax)
