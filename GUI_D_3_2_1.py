@@ -159,7 +159,7 @@ class AudioAnalysisToolkitApp:
             self.hw_log("Sounddevice không khả dụng.")
             return
         try:
-            inputs, outputs = devices.list_devices(raise_on_error=True, refresh=not from_timer)
+            inputs, outputs = devices.list_devices(raise_on_error=True)
             signature = devices.get_devices_signature()
 
             prev_in_sel = self.hw_input_dev.get()
@@ -204,13 +204,7 @@ class AudioAnalysisToolkitApp:
                     if prev_out_sel:
                         self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
 
-                self.hw_log(
-                    f"Đã làm mới danh sách thiết bị âm thanh. Inputs: {len(inputs)}, Outputs: {len(outputs)}"
-                )
-                if inputs:
-                    self.hw_log(f"Inputs: {inputs}")
-                if outputs:
-                    self.hw_log(f"Outputs: {outputs}")
+                self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
             else:
                 if not from_timer:
                     self.hw_log("Danh sách thiết bị không đổi.")

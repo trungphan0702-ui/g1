@@ -11,17 +11,9 @@ def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     return np.convolve(mag, kernel, mode='same')
 
 
-def _to_mono(sig: np.ndarray) -> np.ndarray:
-    return sig if sig.ndim == 1 else np.mean(sig, axis=1)
-
-
-def _decimate_for_corr(sig: np.ndarray, max_len: int = 200_000) -> Tuple[np.ndarray, int]:
-    """Downsample long signals to keep correlation work bounded."""
-
-    if len(sig) <= max_len:
-        return sig, 1
-    factor = int(np.ceil(len(sig) / float(max_len)))
-    return sig[::factor], factor
+def align_signals(ref: np.ndarray, target: np.ndarray, max_lag_samples: int = None) -> Tuple[np.ndarray, np.ndarray, int]:
+    ref_mono = ref if ref.ndim == 1 else ref[:, 0]
+    tgt_mono = target if target.ndim == 1 else target[:, 0]
 
 
 def align_signals(
@@ -32,33 +24,12 @@ def align_signals(
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Align signals using envelope cross-correlation with optional lag bounds."""
 
-    ref_mono = _to_mono(ref).astype(float)
-    tgt_mono = _to_mono(target).astype(float)
-
-    # Remove DC and soften edges
-    ref_proc = _smooth_abs(ref_mono - np.mean(ref_mono))
-    tgt_proc = _smooth_abs(tgt_mono - np.mean(tgt_mono))
-
-    # Downsample for manageable correlation cost
-    ref_corr, factor_ref = _decimate_for_corr(ref_proc)
-    tgt_corr, factor_tgt = _decimate_for_corr(tgt_proc)
-    factor = max(factor_ref, factor_tgt)
-    if factor > 1:
-        ref_corr = ref_proc[::factor]
-        tgt_corr = tgt_proc[::factor]
-
-    center = len(ref_corr) - 1
-    if max_lag_samples is None:
-        max_lag_samples = min(len(ref_corr), len(tgt_corr)) - 1
-    search = int(np.clip(max_lag_samples // factor, 1, max(len(ref_corr), len(tgt_corr))))
-
-    corr = np.correlate(tgt_corr, ref_corr, mode='full')
-    start = max(center - search, 0)
-    end = min(center + search + 1, len(corr))
-    window = slice(start, end)
-    subcorr = corr[window]
-    lag_corr_dec = int(np.argmax(subcorr) + window.start - center)
-    lag_corr = lag_corr_dec * factor
+    corr = np.correlate(tgt_pad, ref_pad, mode='full')
+    lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    if max_lag_samples is not None:
+        window = slice(len(corr) // 2 - max_lag_samples, len(corr) // 2 + max_lag_samples + 1)
+        subcorr = corr[window]
+        lag_corr = int(np.argmax(subcorr) + window.start - (len(ref_pad) - 1))
 
     def onset_idx(raw: np.ndarray) -> int:
         abs_raw = np.abs(raw)

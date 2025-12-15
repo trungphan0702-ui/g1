@@ -11,30 +11,7 @@ except Exception as exc:  # pragma: no cover - best-effort fallback
     _sd_error = exc
 
 
-def _reinitialize_backend() -> bool:
-    """Attempt to drop any cached PortAudio state and re-initialize."""
-
-    if sd is None:
-        return False
-    try:
-        if hasattr(sd, "_terminate"):
-            sd._terminate()  # type: ignore[attr-defined]
-        if hasattr(sd, "_initialize"):
-            sd._initialize()  # type: ignore[attr-defined]
-        return True
-    except Exception:
-        return False
-
-
-def _query_devices(refresh: bool = False):
-    if sd is None:
-        return []
-    if refresh:
-        _reinitialize_backend()
-    return sd.query_devices()
-
-
-def list_devices(raise_on_error: bool = False, refresh: bool = False) -> Tuple[List[str], List[str]]:
+def list_devices(raise_on_error: bool = False) -> Tuple[List[str], List[str]]:
     """Return (inputs, outputs) as display strings.
 
     When ``raise_on_error`` is True, propagate the sounddevice exception so the
@@ -63,7 +40,7 @@ def get_devices_signature() -> Optional[str]:
     if sd is None:
         return None
     try:
-        devs = _query_devices()
+        devs = sd.query_devices()
         payload = [
             (i, dev.get("name", ""), dev.get("max_input_channels", 0), dev.get("max_output_channels", 0))
             for i, dev in enumerate(devs)

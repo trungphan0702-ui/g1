@@ -34,10 +34,6 @@ class BenchConfig:
     compressor_knee_db: float = 0.0
     compressor_attack_ms: float = 10.0
     compressor_release_ms: float = 100.0
-    compare_max_lag_ms: Optional[float] = 200.0
-    compare_trim_start: float = 0.05
-    compare_trim_end: float = 0.95
-    compare_verdict_thresholds: Dict[str, float] = field(default_factory=dict)
 
     def update(self, data: Dict[str, Any]) -> None:
         for key, val in data.items():
@@ -77,26 +73,6 @@ def _sine_with_harmonic(freq: float, fs: int, duration: float, amp: float, harmo
         harm_amp = amp * 10 ** (level_db / 20.0)
         sig += harm_amp * np.sin(2 * np.pi * freq * order * t)
     return sig.astype(np.float32)
-
-
-def _synthetic_compare_pair(
-    cfg: BenchConfig,
-    freq: float,
-    duration: float,
-    delay_ms: float = 5.0,
-    gain_db: float = -6.0,
-    noise_dbfs: float = -60.0,
-    harmonic: Optional[Dict[str, Any]] = None,
-) -> Dict[str, np.ndarray]:
-    base = _sine_with_harmonic(freq, cfg.fs, duration, cfg.amp, harmonic=harmonic)
-    delay_samples = int(delay_ms / 1000.0 * cfg.fs)
-    gain = 10 ** (gain_db / 20.0)
-    tgt = np.concatenate([np.zeros(delay_samples), base * gain])
-    tgt = tgt[: len(base) + delay_samples]
-    ref = np.concatenate([base, np.zeros(delay_samples)])
-    noise = (10 ** (noise_dbfs / 20.0)) * np.random.randn(len(tgt))
-    tgt = tgt + noise
-    return {"ref": ref.astype(np.float32), "tgt": tgt.astype(np.float32)}
 
 
 def _flatten_metrics(case: BenchCase) -> Dict[str, Any]:
@@ -242,10 +218,7 @@ def run_compressor_cases(cfg: BenchConfig, cases_cfg: List[Dict[str, Any]], verb
 
         metrics = compressor.compression_curve(rx, tone_meta["meta"], cfg.fs, freq)
         params = {"freq": freq, "amp_max": amp_max, **comp_params, "applied": apply, "fs": cfg.fs}
-        notes: List[str] = []
-        if metrics.get("no_compression"):
-            notes.append("Detected no compression; thr/ratio reported as passthrough")
-        results.append(BenchCase(name=name, category="compressor", params=params, metrics=metrics, notes=notes))
+        results.append(BenchCase(name=name, category="compressor", params=params, metrics=metrics))
         _log(
             f"[COMP] {name}: thr={metrics['thr_db']}, ratio={metrics['ratio']}, gain_off={metrics['gain_offset_db']:+.2f} dB",
             verbose,
@@ -257,59 +230,28 @@ def run_compare_cases(cfg: BenchConfig, cases_cfg: List[Dict[str, Any]], verbose
     results: List[BenchCase] = []
     for entry in cases_cfg:
         name = entry.get("name", "compare")
+        inp = entry.get("input_wav") or ""
+        out = entry.get("output_wav") or ""
         freq = entry.get("freq", cfg.freq)
         hmax = entry.get("hmax", cfg.thd_max_h)
-        trim = (entry.get("trim_start", cfg.compare_trim_start), entry.get("trim_end", cfg.compare_trim_end))
+        if not (inp and out and os.path.isfile(inp) and os.path.isfile(out)):
+            results.append(BenchCase(name=name, category="compare", params={"input": inp, "output": out}, notes=["Skipped: missing input/output wav."]))
+            continue
 
-        params: Dict[str, Any] = {"freq": freq, "fs": cfg.fs, "hmax": hmax}
-        if entry.get("type") == "synthetic":
-            synth = _synthetic_compare_pair(
-                cfg,
-                freq=freq,
-                duration=entry.get("duration", cfg.duration),
-                delay_ms=entry.get("delay_ms", 5.0),
-                gain_db=entry.get("gain_db", -6.0),
-                noise_dbfs=entry.get("noise_dbfs", -60.0),
-                harmonic=entry.get("harmonic"),
-            )
-            sig_in, sig_out, fs_in = synth["ref"], synth["tgt"], cfg.fs
-            params.update({
-                "delay_ms": entry.get("delay_ms", 5.0),
-                "gain_db": entry.get("gain_db", -6.0),
-                "noise_dbfs": entry.get("noise_dbfs", -60.0),
-                "type": "synthetic",
-            })
-        else:
-            inp = entry.get("input_wav") or ""
-            out = entry.get("output_wav") or ""
-            params.update({"input_wav": inp, "output_wav": out})
-            if not (inp and out and os.path.isfile(inp) and os.path.isfile(out)):
-                results.append(BenchCase(name=name, category="compare", params=params, notes=["Skipped: missing input/output wav."]))
-                continue
+        fs_in, sig_in = wav_io.read_wav(inp)
+        fs_out, sig_out = wav_io.read_wav(out)
+        if fs_in is None or fs_out is None or fs_in != fs_out:
+            results.append(BenchCase(name=name, category="compare", params={"input": inp, "output": out}, notes=["Skipped: fs mismatch or read error."]))
+            continue
 
-            fs_in, sig_in = wav_io.read_wav(inp)
-            fs_out, sig_out = wav_io.read_wav(out)
-            if fs_in is None or fs_out is None or fs_in != fs_out:
-                results.append(BenchCase(name=name, category="compare", params=params, notes=["Skipped: fs mismatch or read error."]))
-                continue
-
-        max_lag = None
-        if cfg.compare_max_lag_ms is not None:
-            max_lag = int(cfg.compare_max_lag_ms / 1000.0 * fs_in)
-        metrics = compare.compare_signals(
-            sig_in,
-            sig_out,
-            fs_in,
-            freq,
-            hmax,
-            max_lag_samples=max_lag,
-            stable_region=trim,
-            thresholds=cfg.compare_verdict_thresholds,
-        )
-        params.update({"trim": trim, "max_lag_ms": cfg.compare_max_lag_ms})
+        aligned_ref, aligned_tgt, lag = compare.align_signals(sig_in, sig_out)
+        gain_matched, gain_error_db = compare.gain_match(aligned_ref, aligned_tgt)
+        metrics = compare.residual_metrics(aligned_ref, gain_matched, fs_in, freq, hmax)
+        metrics.update({"latency_samples": lag, "latency_ms": lag / fs_in * 1000.0, "gain_error_db": gain_error_db})
+        params = {"freq": freq, "fs": fs_in, "hmax": hmax, "input_wav": inp, "output_wav": out}
         results.append(BenchCase(name=name, category="compare", params=params, metrics=metrics))
         _log(
-            f"[CMP] {name}: latency={metrics['latency_ms']:.2f} ms, gain_err={metrics['gain_error_db']:+.2f} dB, SNR={metrics['snr_db']:.2f} dB, verdict={metrics['verdict']}",
+            f"[CMP] {name}: latency={metrics['latency_ms']:.2f} ms, gain_err={metrics['gain_error_db']:+.2f} dB, SNR={metrics['snr_db']:.2f} dB",
             verbose,
         )
     return results
@@ -395,10 +337,7 @@ def main() -> None:
             elif case.category == "compressor":
                 msg += f" | Thr {case.metrics.get('thr_db')} dB, Ratio {case.metrics.get('ratio')}"
             elif case.category == "compare":
-                msg += (
-                    f" | Latency {case.metrics.get('latency_ms', np.nan):.2f} ms, Gain {case.metrics.get('gain_error_db', np.nan):+.2f} dB,"
-                    f" SNR {case.metrics.get('snr_db', np.nan):.1f} dB, Verdict {case.metrics.get('verdict', '')}"
-                )
+                msg += f" | Latency {case.metrics.get('latency_ms', np.nan):.2f} ms, Gain {case.metrics.get('gain_error_db', np.nan):+.2f} dB"
         print(msg)
 
 
