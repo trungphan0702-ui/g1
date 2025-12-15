@@ -14,6 +14,7 @@ except Exception:
 from analysis import attack_release, compare, compressor, thd
 from audio import devices, playrec, wav_io
 from utils.logging import UILogger
+from utils.plot_windows import PlotWindowManager
 from utils.threading import run_in_thread
 
 # ============================================================
@@ -73,7 +74,14 @@ class AudioAnalysisToolkitApp:
         self.state = {'input_file': '', 'received_file': ''}
         self.stop_event = threading.Event()
         self.worker = None
+        self._last_input_devices = []
+        self._last_output_devices = []
+        self._devices_signature = None
+        self._auto_refresh_job = None
+        self.auto_refresh_interval_ms = 8000
+        self.auto_refresh_enabled = tk.BooleanVar(value=False)
         self.logger = UILogger(self.hw_log)
+        self.plot_manager = PlotWindowManager(master, log=self.hw_log)
 
         self._configure_style()
         self._build_ui()
@@ -106,10 +114,24 @@ class AudioAnalysisToolkitApp:
         if self.worker and self.worker.is_alive():
             self.hw_log("Một tác vụ khác đang chạy. Vui lòng chờ...")
             return
-        self.worker = run_in_thread(target, self.stop_event, name=name)
+        def wrapped():
+            try:
+                target()
+            except Exception as exc:
+                import traceback
+
+                self.hw_log(f"[{name or target.__name__}] lỗi: {exc}")
+                for line in traceback.format_exc().strip().splitlines():
+                    self.hw_log(line)
+
+        self.worker = run_in_thread(wrapped, self.stop_event, name=name)
 
     def request_stop(self):
         self.stop_event.set()
+
+    def _schedule_plot(self, func, *args, **kwargs):
+        if self.master:
+            self.master.after(0, lambda: func(*args, **kwargs))
 
     def _require_sounddevice(self):
         if sd is None:
@@ -132,25 +154,85 @@ class AudioAnalysisToolkitApp:
     # ---------------------------------------------------------
     # DEVICE REFRESH
     # ---------------------------------------------------------
-    def _refresh_hw_devices(self):
+    def _refresh_hw_devices(self, from_timer: bool = False):
         if sd is None:
             self.hw_log("Sounddevice không khả dụng.")
             return
         try:
-            inputs, outputs = devices.list_devices()
-            self.cb_in['values'] = inputs
-            self.cb_out['values'] = outputs
+            inputs, outputs = devices.list_devices(raise_on_error=True, refresh=not from_timer)
+            signature = devices.get_devices_signature()
 
-            if inputs:
-                self.cb_in.current(0)
-                self.hw_input_dev.set(inputs[0])
-            if outputs:
-                self.cb_out.current(0)
-                self.hw_output_dev.set(outputs[0])
+            prev_in_sel = self.hw_input_dev.get()
+            prev_out_sel = self.hw_output_dev.get()
 
-            self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
+            added_in = [d for d in inputs if d not in self._last_input_devices]
+            removed_in = [d for d in self._last_input_devices if d not in inputs]
+            added_out = [d for d in outputs if d not in self._last_output_devices]
+            removed_out = [d for d in self._last_output_devices if d not in outputs]
+
+            changed = bool(added_in or removed_in or added_out or removed_out)
+            first_refresh = not self._devices_signature
+
+            if changed or first_refresh:
+                self.cb_in['values'] = inputs
+                self.cb_out['values'] = outputs
+
+                if added_in:
+                    self.hw_log(f"Added inputs: {', '.join(added_in)}")
+                if removed_in:
+                    self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
+                if added_out:
+                    self.hw_log(f"Added outputs: {', '.join(added_out)}")
+                if removed_out:
+                    self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
+
+                if prev_in_sel in inputs:
+                    self.hw_input_dev.set(prev_in_sel)
+                    self.cb_in.set(prev_in_sel)
+                elif inputs:
+                    self.cb_in.current(0)
+                    self.hw_input_dev.set(inputs[0])
+                    if prev_in_sel:
+                        self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
+
+                if prev_out_sel in outputs:
+                    self.hw_output_dev.set(prev_out_sel)
+                    self.cb_out.set(prev_out_sel)
+                elif outputs:
+                    self.cb_out.current(0)
+                    self.hw_output_dev.set(outputs[0])
+                    if prev_out_sel:
+                        self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
+
+                self.hw_log(
+                    f"Đã làm mới danh sách thiết bị âm thanh. Inputs: {len(inputs)}, Outputs: {len(outputs)}"
+                )
+                if inputs:
+                    self.hw_log(f"Inputs: {inputs}")
+                if outputs:
+                    self.hw_log(f"Outputs: {outputs}")
+            else:
+                if not from_timer:
+                    self.hw_log("Danh sách thiết bị không đổi.")
+
+            self._last_input_devices = inputs
+            self._last_output_devices = outputs
+            self._devices_signature = signature
         except Exception as e:
             self.hw_log(f"Lỗi khi lấy thiết bị: {e}")
+
+    def _auto_refresh_tick(self):
+        if not self.auto_refresh_enabled.get():
+            return
+        self._refresh_hw_devices(from_timer=True)
+        self._auto_refresh_job = self.master.after(self.auto_refresh_interval_ms, self._auto_refresh_tick)
+
+    def _on_auto_refresh_toggle(self):
+        if self._auto_refresh_job:
+            self.master.after_cancel(self._auto_refresh_job)
+            self._auto_refresh_job = None
+        if self.auto_refresh_enabled.get():
+            self._auto_refresh_job = self.master.after(self.auto_refresh_interval_ms, self._auto_refresh_tick)
 
     # ---------------------------------------------------------
     def select_hw_loop_file(self):
@@ -197,6 +279,13 @@ class AudioAnalysisToolkitApp:
         self.cb_out.grid(row=0, column=3, sticky="w", padx=4)
 
         ttk.Button(dev_frame, text="Làm mới", command=self._refresh_hw_devices).grid(row=0, column=4, padx=6)
+
+        ttk.Checkbutton(
+            dev_frame,
+            text="Auto refresh devices",
+            variable=self.auto_refresh_enabled,
+            command=self._on_auto_refresh_toggle
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=4, pady=(2, 0))
 
         # PanedWindow
         paned = ttk.PanedWindow(tab_hw, orient="horizontal")
@@ -374,6 +463,7 @@ class AudioAnalysisToolkitApp:
         self.hw_log(f"THD ≈ {res['thd_percent']:.4f}% ({res['thd_db']:.2f} dB)")
         for h, v in res['harmonics_dbc'].items():
             self.hw_log(f"H{h}: {v:.2f} dBc")
+        self._schedule_plot(self.plot_manager.open_thd_snapshot, recorded, fs, res, freq, hmax)
 
     def run_hw_compressor(self):
         if not self._require_sounddevice():
@@ -394,6 +484,7 @@ class AudioAnalysisToolkitApp:
             self.hw_log(f"Path gain ≈ {curve['gain_offset_db']:+.2f} dB (không thấy nén)")
         else:
             self.hw_log(f"Threshold ≈ {curve['thr_db']:.2f} dBFS | Ratio ≈ {curve['ratio']:.2f}:1 | Gain offset {curve['gain_offset_db']:+.2f} dB")
+        self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Captured", curve)])
 
     def run_hw_attack_release(self):
         if not self._require_sounddevice():
@@ -411,6 +502,7 @@ class AudioAnalysisToolkitApp:
             return
         times = attack_release.attack_release_times(recorded, fs, rms_win)
         self.hw_log(f"Attack ≈ {times['attack_ms']:.1f} ms | Release ≈ {times['release_ms']:.1f} ms")
+        self._schedule_plot(self.plot_manager.open_ar_snapshot, recorded, fs, rms_win, times)
 
     # ---------------------------------------------------------
     # LOOPBACK & FILE OPERATIONS
@@ -455,6 +547,7 @@ class AudioAnalysisToolkitApp:
         if mode == 'thd':
             res = thd.compute_thd(data, fs, freq, hmax)
             self.hw_log(f"[Single] THD {os.path.basename(path)}: {res['thd_percent']:.4f}% ({res['thd_db']:.2f} dB)")
+            self._schedule_plot(self.plot_manager.open_thd_snapshot, data, fs, res, freq, hmax)
         elif mode == 'compressor':
             meta = compressor.build_stepped_tone(freq, fs)
             res = compressor.compression_curve(data, meta['meta'], fs, freq)
@@ -462,9 +555,11 @@ class AudioAnalysisToolkitApp:
                 self.hw_log("[Single] Không phát hiện nén.")
             else:
                 self.hw_log(f"[Single] Thr {res['thr_db']:.2f} dBFS | Ratio {res['ratio']:.2f}:1 | Gain {res['gain_offset_db']:+.2f} dB")
+            self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Captured", res)])
         elif mode == 'ar':
             times = attack_release.attack_release_times(data, fs, rms_win)
             self.hw_log(f"[Single] Attack {times['attack_ms']:.1f} ms | Release {times['release_ms']:.1f} ms")
+            self._schedule_plot(self.plot_manager.open_ar_snapshot, data, fs, rms_win, times)
 
     def _log_residual_metrics(self, metrics, latency_ms, gain_error_db):
         self.hw_log(f"Latency: {latency_ms:.2f} ms | Gain error: {gain_error_db:+.2f} dB")
@@ -488,13 +583,16 @@ class AudioAnalysisToolkitApp:
             return
         sig_in = np.asarray(sig_in, dtype=np.float32)
         sig_out = np.asarray(sig_out, dtype=np.float32)
-        a_in, a_out, lag = compare.align_signals(sig_in, sig_out)
+        max_lag = int(fs_in * 5)  # cap search to ~5s to avoid runaway correlation
+        a_in, a_out, lag = compare.align_signals(sig_in, sig_out, max_lag_samples=max_lag)
         a_out, gain_err = compare.gain_match(a_in, a_out)
         latency_ms = lag / fs_in * 1000.0
         metrics = compare.residual_metrics(a_in, a_out, fs_in, freq, hmax)
         self._log_residual_metrics(metrics, latency_ms, gain_err)
         if mode == 'thd':
             self.hw_log(f"THD input: {metrics['thd_ref_db']:.2f} dB | received: {metrics['thd_tgt_db']:.2f} dB")
+            res_out = thd.compute_thd(a_out, fs_in, freq, hmax)
+            self._schedule_plot(self.plot_manager.open_thd_snapshot, a_out, fs_in, res_out, freq, hmax)
         elif mode == 'compressor':
             meta = compressor.build_stepped_tone(freq, fs_in)
             base_curve = compressor.compression_curve(a_in, meta['meta'], fs_in, freq)
@@ -502,10 +600,12 @@ class AudioAnalysisToolkitApp:
             self.hw_log(f"Input Thr {base_curve['thr_db']:.2f} | Ratio {base_curve['ratio']:.2f}")
             self.hw_log(f"Received Thr {out_curve['thr_db']:.2f} | Ratio {out_curve['ratio']:.2f}")
             self.hw_log(f"ΔThr {out_curve['thr_db'] - base_curve['thr_db']:+.2f} dB | ΔRatio {out_curve['ratio'] - base_curve['ratio']:+.2f}")
+            self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Input", base_curve), ("Output", out_curve)])
         elif mode == 'ar':
             cmp_ar = attack_release.compare_attack_release(a_in, a_out, fs_in, rms_win)
             self.hw_log(f"Attack in/out: {cmp_ar['input']['attack_ms']:.1f} / {cmp_ar['output']['attack_ms']:.1f} ms | Δ {cmp_ar['delta_attack']:+.1f} ms")
             self.hw_log(f"Release in/out: {cmp_ar['input']['release_ms']:.1f} / {cmp_ar['output']['release_ms']:.1f} ms | Δ {cmp_ar['delta_release']:+.1f} ms")
+            self._schedule_plot(self.plot_manager.open_ar_snapshot, a_out, fs_in, rms_win, cmp_ar['output'])
 
     def analyze_loopback(self, mode: str):
         inp = self.state.get('input_file') or self.hw_loop_file.get()
