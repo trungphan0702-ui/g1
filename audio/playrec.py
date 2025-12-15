@@ -9,7 +9,15 @@ except Exception as exc:  # ImportError or PortAudio missing
     _sd_error = exc
 
 
-def play_and_record(signal: np.ndarray, fs: int, in_dev: Optional[int], out_dev: Optional[int], stop_event, log=None):
+def play_and_record(
+    signal: np.ndarray,
+    fs: int,
+    in_dev: Optional[int],
+    out_dev: Optional[int],
+    stop_event,
+    log=None,
+    input_channels: int = 1,
+):
     if sd is None:
         if log:
             log(f"play_and_record unavailable: { _sd_error }")
@@ -18,9 +26,12 @@ def play_and_record(signal: np.ndarray, fs: int, in_dev: Optional[int], out_dev:
         return None
     sd.default.device = (in_dev, out_dev)
     sd.default.samplerate = fs
-    channels = 1 if signal.ndim == 1 else signal.shape[1]
+    channels = int(max(1, input_channels))
+    kwargs = {}
+    if in_dev is not None or out_dev is not None:
+        kwargs['device'] = (in_dev, out_dev)
     try:
-        rec = sd.playrec(signal, samplerate=fs, channels=channels, dtype='float32')
+        rec = sd.playrec(signal, samplerate=fs, channels=channels, dtype='float32', **kwargs)
         sd.wait()
     except Exception as exc:
         if log:

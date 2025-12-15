@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
@@ -11,7 +12,7 @@ try:
 except Exception:
     sd = None
 
-from analysis import attack_release, compare, compressor, thd
+from analysis import attack_release, compare, compressor, thd, live_measurements
 from audio import devices, playrec, wav_io
 from utils.logging import UILogger
 from utils.plot_windows import PlotWindowManager
@@ -163,7 +164,11 @@ class AudioAnalysisToolkitApp:
             self.hw_log("Sounddevice không khả dụng.")
             return
         try:
+            raw_devices = sd.query_devices()
             inputs, outputs = devices.list_devices(raise_on_error=True)
+
+            in_count = sum(1 for d in raw_devices if d.get('max_input_channels', 0) > 0)
+            out_count = sum(1 for d in raw_devices if d.get('max_output_channels', 0) > 0)
 
             prev_in_sel = self.hw_input_dev.get()
             prev_out_sel = self.hw_output_dev.get()
@@ -213,13 +218,13 @@ class AudioAnalysisToolkitApp:
             if changed or first_refresh:
                 self.hw_log(
                     "Đã làm mới danh sách thiết bị âm thanh. "
-                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)} (query_devices: {in_count}/{out_count}). "
                     f"Chọn input: {selected_in}; chọn output: {selected_out}."
                 )
             elif not from_timer:
                 self.hw_log(
                     "Danh sách thiết bị không đổi. "
-                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)} (query_devices: {in_count}/{out_count}). "
                     f"Chọn input: {selected_in}; chọn output: {selected_out}."
                 )
 
@@ -451,6 +456,18 @@ class AudioAnalysisToolkitApp:
             sig[-fade:] *= window[::-1]
         return sig
 
+    def _log_recording_stats(self, data: np.ndarray, label: str = "Rx"):
+        try:
+            flat = np.asarray(data, dtype=np.float32).flatten()
+            if flat.size == 0:
+                self.hw_log(f"{label}: (no samples)")
+                return
+            rms = float(np.sqrt(np.mean(np.square(flat))))
+            clip = int(np.sum(np.abs(flat) >= 0.999))
+            self.hw_log(f"{label}: min {flat.min():.4f} | max {flat.max():.4f} | rms {rms:.4f} | clips {clip}")
+        except Exception as exc:  # pragma: no cover - logging best-effort
+            self.hw_log(f"{label}: lỗi khi log thống kê ({exc})")
+
     def run_hw_thd(self):
         if not self._require_sounddevice():
             return
@@ -459,39 +476,64 @@ class AudioAnalysisToolkitApp:
         hmax = self._parse_int(self.thd_max_h, 5)
         in_dev, out_dev = self._device_indices()
         fs = devices.default_samplerate(out_dev or None)
-        duration = 2.0
-        t = np.linspace(0, duration, int(fs * duration), endpoint=False)
-        tone = self._prepare_signal(amp * np.sin(2 * np.pi * freq * t))
+        tone = self._prepare_signal(live_measurements.generate_thd_tone(freq, amp, fs))
         self.logger.banner(f"THD HW @ {freq} Hz, amp {amp}")
-        recorded = playrec.play_and_record(tone, fs, in_dev, out_dev, self.stop_event, log=self.hw_log)
-        if recorded is None:
+        recorded = playrec.play_and_record(
+            tone, fs, in_dev, out_dev, self.stop_event, log=self.hw_log, input_channels=1
+        )
+        if recorded is None or len(recorded) == 0:
             self.hw_log("Không ghi được dữ liệu.")
             return
-        res = thd.compute_thd(recorded, fs, freq, hmax)
-        self.hw_log(f"THD ≈ {res['thd_percent']:.4f}% ({res['thd_db']:.2f} dB)")
-        for h, v in res['harmonics_dbc'].items():
+        self._log_recording_stats(recorded, "THD Rx")
+        res = live_measurements.analyze_thd_capture(recorded, fs, freq, hmax)
+        thd_percent = res.get("thd_percent_manual", 0.0)
+        thd_db = res.get("thd_db_manual", res.get("thd_db", 0.0))
+        harmonics = res.get("harmonics_manual", {})
+        self.hw_log(f"THD ≈ {thd_percent:.4f}% ({thd_db:.2f} dB)")
+        for h, v in harmonics.items():
             self.hw_log(f"H{h}: {v:.2f} dBc")
-        self._schedule_plot(self.plot_manager.open_thd_snapshot, recorded, fs, res, freq, hmax)
+        csv_path = live_measurements.append_csv_row(
+            (time.strftime("%Y-%m-%d %H:%M:%S"), "THD", f"{thd_percent:.4f}%", f"{thd_db:.2f} dB"),
+            BASE_DIR,
+        )
+        self.hw_log(f"💾 Đã lưu kết quả vào '{csv_path}'.")
+        artifacts = live_measurements.save_artifacts("thd", tone, recorded, fs, BASE_DIR)
+        self.hw_log(f"Đã lưu TX/RX: {artifacts['tx']} | {artifacts['rx']}")
+        sig_for_plot = res.get("normalized_signal", recorded)
+        self._schedule_plot(self.plot_manager.open_thd_snapshot, sig_for_plot, fs, res, freq, hmax)
 
     def run_hw_compressor(self):
         if not self._require_sounddevice():
             return
         freq = self._parse_float(self.hw_freq, 1000.0)
-        amp_max = self._parse_float(self.hw_amp, 1.0)
+        amp_max = self._parse_float(self.hw_amp, 1.36)
         in_dev, out_dev = self._device_indices()
         fs = devices.default_samplerate(out_dev or None)
-        tx_meta = compressor.build_stepped_tone(freq, fs, amp_max)
+        tx_meta = live_measurements.generate_compressor_tone(freq, fs, amp_max)
         tone = self._prepare_signal(tx_meta['signal'])
         self.logger.banner("Đo compressor (stepped sweep)")
-        recorded = playrec.play_and_record(tone, fs, in_dev, out_dev, self.stop_event, log=self.hw_log)
-        if recorded is None:
+        recorded = playrec.play_and_record(
+            tone, fs, in_dev, out_dev, self.stop_event, log=self.hw_log, input_channels=1
+        )
+        if recorded is None or len(recorded) == 0:
             self.hw_log("Không ghi được dữ liệu compressor.")
             return
-        curve = compressor.compression_curve(recorded, tx_meta['meta'], fs, freq)
+        self._log_recording_stats(recorded, "Compressor Rx")
+        curve = live_measurements.analyze_compressor_capture(recorded, tx_meta['meta'], fs)
         if curve['no_compression']:
             self.hw_log(f"Path gain ≈ {curve['gain_offset_db']:+.2f} dB (không thấy nén)")
         else:
             self.hw_log(f"Threshold ≈ {curve['thr_db']:.2f} dBFS | Ratio ≈ {curve['ratio']:.2f}:1 | Gain offset {curve['gain_offset_db']:+.2f} dB")
+        csv_row = (
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            "Compression",
+            "No compression" if curve['no_compression'] else f"Thr {curve['thr_db']:.2f} dBFS",
+            f"Ratio {curve['ratio']:.2f}:1" if not curve['no_compression'] else f"Gain {curve['gain_offset_db']:+.2f} dB",
+        )
+        csv_path = live_measurements.append_csv_row(csv_row, BASE_DIR)
+        self.hw_log(f"💾 Đã lưu kết quả vào '{csv_path}'.")
+        artifacts = live_measurements.save_artifacts("compressor", tone, recorded, fs, BASE_DIR)
+        self.hw_log(f"Đã lưu TX/RX: {artifacts['tx']} | {artifacts['rx']}")
         self._schedule_plot(self.plot_manager.open_compressor_snapshot, [("Captured", curve)])
 
     def run_hw_attack_release(self):

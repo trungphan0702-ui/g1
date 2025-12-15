@@ -2,6 +2,8 @@ import numpy as np
 import wave
 from typing import Tuple, Optional
 
+import numpy as np
+
 try:
     import soundfile as sf
 except Exception:

@@ -3,17 +3,17 @@ from typing import Dict, Any, Tuple, Optional
 from . import thd
 
 
+def _to_mono(x: np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float32)
+    return arr if arr.ndim == 1 else arr[:, 0]
+
+
 def _smooth_abs(x: np.ndarray, win: int = 256) -> np.ndarray:
     mag = np.abs(x)
     if len(mag) < win:
         return mag
     kernel = np.ones(win) / float(win)
     return np.convolve(mag, kernel, mode='same')
-
-
-def align_signals(ref: np.ndarray, target: np.ndarray, max_lag_samples: int = None) -> Tuple[np.ndarray, np.ndarray, int]:
-    ref_mono = ref if ref.ndim == 1 else ref[:, 0]
-    tgt_mono = target if target.ndim == 1 else target[:, 0]
 
 
 def align_signals(
@@ -24,12 +24,18 @@ def align_signals(
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Align signals using envelope cross-correlation with optional lag bounds."""
 
-    corr = np.correlate(tgt_pad, ref_pad, mode='full')
-    lag_corr = int(np.argmax(corr) - (len(ref_pad) - 1))
+    ref_raw = _to_mono(ref)
+    tgt_raw = _to_mono(target)
+    ref_mono = _smooth_abs(ref_raw)
+    tgt_mono = _smooth_abs(tgt_raw)
+
+    corr = np.correlate(tgt_mono, ref_mono, mode='full')
+    center = len(ref_mono) - 1
+    lag_corr = int(np.argmax(corr) - center)
     if max_lag_samples is not None:
-        window = slice(len(corr) // 2 - max_lag_samples, len(corr) // 2 + max_lag_samples + 1)
+        window = slice(max(0, center - max_lag_samples), min(len(corr), center + max_lag_samples + 1))
         subcorr = corr[window]
-        lag_corr = int(np.argmax(subcorr) + window.start - (len(ref_pad) - 1))
+        lag_corr = int(np.argmax(subcorr) + window.start - center)
 
     def onset_idx(raw: np.ndarray) -> int:
         abs_raw = np.abs(raw)
@@ -37,7 +43,7 @@ def align_signals(
         idxs = np.nonzero(abs_raw > thresh)[0]
         return int(idxs[0]) if idxs.size else 0
 
-    lag_onset = onset_idx(tgt_mono) - onset_idx(ref_mono)
+    lag_onset = onset_idx(tgt_raw) - onset_idx(ref_raw)
     lag = lag_onset if prefer_onset and lag_onset != 0 else lag_corr
 
     if lag >= 0:
@@ -151,85 +157,3 @@ def residual_metrics(
     return metrics
 
 
-def classify_quality(
-    metrics: Dict[str, Any],
-    thresholds: Optional[Dict[str, float]] = None,
-) -> Tuple[str, list]:
-    th = thresholds or {}
-    reasons = []
-
-    snr = metrics.get("snr_db", -np.inf)
-    gain_err = abs(metrics.get("gain_error_db", 0.0))
-    fr_max = metrics.get("fr_dev_max_db", 0.0)
-    thd_delta = abs(metrics.get("thd_delta_db", 0.0))
-    clip = metrics.get("clipping_samples", 0)
-
-    def bound(key: str, default: float) -> float:
-        return float(th.get(key, default))
-
-    status = "GOOD"
-    if snr < bound("snr_good_db", 60):
-        status = "OK"
-        reasons.append(f"SNR {snr:.1f} dB < good {bound('snr_good_db', 60):.1f} dB")
-    if snr < bound("snr_ok_db", 40):
-        status = "BAD"
-        reasons.append(f"SNR {snr:.1f} dB < ok {bound('snr_ok_db', 40):.1f} dB")
-
-    if gain_err > bound("gain_db_good", 1.0):
-        status = "OK" if status == "GOOD" else status
-        reasons.append(f"Gain err {gain_err:.2f} dB > good {bound('gain_db_good', 1.0):.2f} dB")
-    if gain_err > bound("gain_db_bad", 3.0):
-        status = "BAD"
-        reasons.append(f"Gain err {gain_err:.2f} dB > bad {bound('gain_db_bad', 3.0):.2f} dB")
-
-    if fr_max > bound("fr_dev_good", 1.0):
-        status = "OK" if status == "GOOD" else status
-        reasons.append(f"FR dev {fr_max:.2f} dB > good {bound('fr_dev_good', 1.0):.2f} dB")
-    if fr_max > bound("fr_dev_bad", 3.0):
-        status = "BAD"
-        reasons.append(f"FR dev {fr_max:.2f} dB > bad {bound('fr_dev_bad', 3.0):.2f} dB")
-
-    if thd_delta > bound("thd_delta_good", 1.5):
-        status = "OK" if status == "GOOD" else status
-        reasons.append(f"THD Δ {thd_delta:.2f} dB > good {bound('thd_delta_good', 1.5):.2f} dB")
-    if thd_delta > bound("thd_delta_bad", 4.0):
-        status = "BAD"
-        reasons.append(f"THD Δ {thd_delta:.2f} dB > bad {bound('thd_delta_bad', 4.0):.2f} dB")
-
-    if clip > bound("clipping_max_good", 0):
-        status = "OK" if status == "GOOD" else status
-        reasons.append(f"Clipping {clip} samples")
-    if clip > bound("clipping_max_bad", 10):
-        status = "BAD"
-        reasons.append(f"Clipping {clip} samples > {bound('clipping_max_bad', 10)}")
-
-    return status, reasons
-
-
-def compare_signals(
-    ref: np.ndarray,
-    target: np.ndarray,
-    fs: int,
-    freq: float,
-    hmax: int = 5,
-    max_lag_samples: Optional[int] = None,
-    stable_region: Tuple[float, float] = (0.05, 0.95),
-    thresholds: Optional[Dict[str, float]] = None,
-) -> Dict[str, Any]:
-    """Align, gain-match, and measure residual metrics between two signals."""
-
-    aligned_ref, aligned_tgt, lag = align_signals(ref, target, max_lag_samples=max_lag_samples)
-    gain_matched, gain_error_db = gain_match(aligned_ref, aligned_tgt, stable_region=stable_region)
-    metrics = residual_metrics(aligned_ref, gain_matched, fs, freq, hmax, stable_region=stable_region)
-
-    latency_ms = lag / fs * 1000.0
-    metrics.update(
-        {
-            "latency_samples": lag,
-            "latency_ms": latency_ms,
-            "gain_error_db": gain_error_db,
-        }
-    )
-    verdict, reasons = classify_quality(metrics, thresholds=thresholds)
-    metrics.update({"verdict": verdict, "verdict_reasons": reasons})
-    return metrics
