@@ -1,5 +1,8 @@
 from typing import List, Tuple, Optional
 
+import json
+import hashlib
+
 try:  # Optional dependency: sounddevice may be absent in offline environments
     import sounddevice as sd
     _sd_error: Optional[Exception] = None
@@ -8,7 +11,13 @@ except Exception as exc:  # pragma: no cover - best-effort fallback
     _sd_error = exc
 
 
-def list_devices() -> Tuple[List[str], List[str]]:
+def list_devices(raise_on_error: bool = False) -> Tuple[List[str], List[str]]:
+    """Return (inputs, outputs) as display strings.
+
+    When ``raise_on_error`` is True, propagate the sounddevice exception so the
+    caller can log it; otherwise silently returns empty lists on failure.
+    """
+
     inputs, outputs = [], []
     if sd is None:
         return inputs, outputs
@@ -20,8 +29,26 @@ def list_devices() -> Tuple[List[str], List[str]]:
             if dev.get('max_output_channels', 0) > 0:
                 outputs.append(name)
     except Exception:
-        pass
+        if raise_on_error:
+            raise
     return inputs, outputs
+
+
+def get_devices_signature() -> Optional[str]:
+    """Return a stable hash of the current device list for change detection."""
+
+    if sd is None:
+        return None
+    try:
+        devs = sd.query_devices()
+        payload = [
+            (i, dev.get("name", ""), dev.get("max_input_channels", 0), dev.get("max_output_channels", 0))
+            for i, dev in enumerate(devs)
+        ]
+        blob = json.dumps(payload, sort_keys=True).encode()
+        return hashlib.sha256(blob).hexdigest()
+    except Exception:
+        return None
 
 
 def parse_device(selection: str):
