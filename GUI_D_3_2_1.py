@@ -173,50 +173,52 @@ class AudioAnalysisToolkitApp:
             added_out = [d for d in outputs if d not in self._last_output_devices]
             removed_out = [d for d in self._last_output_devices if d not in outputs]
 
-            # Always update combobox lists from fresh device query
-            self.cb_in['values'] = inputs
-            self.cb_out['values'] = outputs
+            changed = bool(added_in or removed_in or added_out or removed_out)
+            first_refresh = not self._devices_signature
 
-            if prev_in_sel in inputs:
-                self.hw_input_dev.set(prev_in_sel)
-                self.cb_in.set(prev_in_sel)
-            elif inputs:
-                self.cb_in.current(0)
-                self.hw_input_dev.set(inputs[0])
-                if prev_in_sel:
-                    self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
-            else:
-                self.hw_input_dev.set("")
-                self.cb_in.set("")
+            if changed or first_refresh:
+                self.cb_in['values'] = inputs
+                self.cb_out['values'] = outputs
 
-            if prev_out_sel in outputs:
-                self.hw_output_dev.set(prev_out_sel)
-                self.cb_out.set(prev_out_sel)
-            elif outputs:
-                self.cb_out.current(0)
-                self.hw_output_dev.set(outputs[0])
-                if prev_out_sel:
-                    self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
-            else:
-                self.hw_output_dev.set("")
-                self.cb_out.set("")
+                if added_in:
+                    self.hw_log(f"Added inputs: {', '.join(added_in)}")
+                if removed_in:
+                    self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
+                if added_out:
+                    self.hw_log(f"Added outputs: {', '.join(added_out)}")
+                if removed_out:
+                    self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
+
+                if prev_in_sel in inputs:
+                    self.hw_input_dev.set(prev_in_sel)
+                    self.cb_in.set(prev_in_sel)
+                elif inputs:
+                    self.cb_in.current(0)
+                    self.hw_input_dev.set(inputs[0])
+                    if prev_in_sel:
+                        self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
+
+                if prev_out_sel in outputs:
+                    self.hw_output_dev.set(prev_out_sel)
+                    self.cb_out.set(prev_out_sel)
+                elif outputs:
+                    self.cb_out.current(0)
+                    self.hw_output_dev.set(outputs[0])
+                    if prev_out_sel:
+                        self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
 
             selected_in = self.hw_input_dev.get() or "(none)"
             selected_out = self.hw_output_dev.get() or "(none)"
 
-            if added_in:
-                self.hw_log(f"Added inputs: {', '.join(added_in)}")
-            if removed_in:
-                self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
-            if added_out:
-                self.hw_log(f"Added outputs: {', '.join(added_out)}")
-            if removed_out:
-                self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
-
-            change_detected = bool(added_in or removed_in or added_out or removed_out or not self._devices_signature)
-            if change_detected or not from_timer:
+            if changed or first_refresh:
                 self.hw_log(
                     "Đã làm mới danh sách thiết bị âm thanh. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Chọn input: {selected_in}; chọn output: {selected_out}."
+                )
+            elif not from_timer:
+                self.hw_log(
+                    "Danh sách thiết bị không đổi. "
                     f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
                     f"Chọn input: {selected_in}; chọn output: {selected_out}."
                 )
