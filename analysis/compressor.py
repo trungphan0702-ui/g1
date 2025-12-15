@@ -76,18 +76,21 @@ def apply_compressor(
     return out if x.ndim == 1 else out[:, None]
 
 
-def build_stepped_tone(freq: float, fs: int, amp_max: float = 1.0) -> Dict[str, Any]:
+def build_stepped_tone(freq: float, fs: int, amp_max: float = 1.36) -> Dict[str, Any]:
     seg_dur, gap_dur = 0.25, 0.05
     amps = np.linspace(0.05, amp_max, 36)
+    protect = amp_max
     t_seg = np.linspace(0, seg_dur, int(fs * seg_dur), endpoint=False)
     gap = np.zeros(int(fs * gap_dur))
     tx = np.concatenate([
-        np.concatenate((min(a, amp_max) * np.sin(2 * np.pi * freq * t_seg), gap)) for a in amps
+        np.concatenate((min(a, protect) * np.sin(2 * np.pi * freq * t_seg), gap)) for a in amps
     ])
     meta = {
         'seg_samples': int(seg_dur * fs),
         'gap_samples': int(gap_dur * fs),
         'amps': amps,
+        'trim_lead': int(0.03 * fs),
+        'trim_tail': int(0.01 * fs),
     }
     return {'signal': tx.astype(np.float32), 'meta': meta}
 
@@ -96,7 +99,9 @@ def compression_curve(sig: np.ndarray, meta: Dict[str, Any], fs: int, freq: floa
     segN = meta['seg_samples']
     gapN = meta['gap_samples']
     amps = meta['amps']
-    trim_lead, trim_tail = int(0.03 * fs), int(0.01 * fs)
+    trim_lead = meta.get('trim_lead', int(0.03 * fs))
+    trim_tail = meta.get('trim_tail', int(0.01 * fs))
+
     rms_in_db, rms_out_db = [], []
     for A, i in zip(amps, range(len(amps))):
         s0 = i * (segN + gapN)
@@ -110,25 +115,24 @@ def compression_curve(sig: np.ndarray, meta: Dict[str, Any], fs: int, freq: floa
     rms_in_db = np.array(rms_in_db)
     rms_out_db = np.array(rms_out_db)
     diff = rms_out_db - rms_in_db
-    low_mask = rms_in_db < np.percentile(rms_in_db, 25)
-    makeup_est = float(np.median(diff[low_mask])) if np.any(low_mask) else float(np.median(diff))
-    gain_offset_db = makeup_est
-    adj_out_db = rms_out_db - makeup_est
-    adj_diff = adj_out_db - rms_in_db
-    a_all, b_all = np.polyfit(rms_in_db, adj_out_db, 1)
-    slope_tol, spread_tol = 0.05, 1.0
-    no_compression = (abs(a_all - 1.0) < slope_tol) and ((adj_diff.max() - adj_diff.min()) < spread_tol)
 
-    mask = adj_diff < -0.5
-    # If nothing crosses -0.5 dB after makeup removal, treat as no-compression to avoid NaNs
-    if no_compression or np.count_nonzero(mask) < 2:
+    a_all, b_all = np.polyfit(rms_in_db, rms_out_db, 1)
+    gain_offset_db = float(np.mean(diff))
+    slope_tol, spread_tol = 0.05, 1.0
+    no_compression = (abs(a_all - 1.0) < slope_tol) and ((diff.max() - diff.min()) < spread_tol)
+
+    if no_compression:
         thr, ratio = np.nan, 1.0
-        no_compression = True
     else:
-        x, y = rms_in_db[mask], adj_out_db[mask]
-        a, b = np.polyfit(x, y, 1)
-        ratio = 1.0 / max(a, 1e-12)
-        thr = b / (1 - a) if abs(1 - a) > 1e-6 else np.nan
+        mask = diff < -0.5
+        if np.count_nonzero(mask) < 2:
+            thr, ratio = np.nan, 1.0
+            no_compression = True
+        else:
+            x, y = rms_in_db[mask], rms_out_db[mask]
+            a, b = np.polyfit(x, y, 1)
+            ratio = 1.0 / max(a, 1e-12)
+            thr = b / (1 - a) if abs(1 - a) > 1e-6 else np.nan
     return {
         'in_db': rms_in_db,
         'out_db': rms_out_db,
