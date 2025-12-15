@@ -1,0 +1,59 @@
+{
+  "defaults": {
+    "fs": 48000,
+    "freq": 1000,
+    "amp": 0.7,
+    "duration": 2.0,
+    "thd_max_h": 5,
+    "thd_fund_band_bins": 2,
+    "thd_window": "hann",
+    "thd_nfft": null,
+    "attack_rms_win_ms": 5,
+    "compressor_amp_max": 1.0,
+    "compressor_threshold_db": -12.0,
+    "compressor_ratio": 4.0,
+    "compressor_makeup_db": 0.0,
+    "compressor_knee_db": 0.0,
+    "compressor_attack_ms": 10.0,
+    "compressor_release_ms": 100.0,
+    "compare_max_lag_ms": 200.0
+  },
+  "thd_cases": [
+    {
+      "name": "thd_clean_sine",
+      "type": "synthetic",
+      "expected": {"thdn_db_max": -40}
+    },
+    {
+      "name": "thd_distorted_sine",
+      "type": "synthetic",
+      "harmonic": {"order": 2, "level_db": -20},
+      "expected": {"thd_db_min": -40}
+    },
+    {
+      "name": "thd_from_file",
+      "type": "file",
+      "input_wav": ""
+    }
+  ],
+  "attack_release_cases": [
+    {"name": "attack_release_default"}
+  ],
+  "compressor_cases": [
+    {
+      "name": "compressor_curve_default",
+      "apply_compressor": false
+    },
+    {
+      "name": "compressor_curve_with_model",
+      "apply_compressor": true
+    }
+  ],
+  "compare_cases": [
+    {
+      "name": "compare_example",
+      "input_wav": "",
+      "output_wav": ""
+    }
+  ]
+}
