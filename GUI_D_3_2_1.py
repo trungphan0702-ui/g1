@@ -74,6 +74,12 @@ class AudioAnalysisToolkitApp:
         self.state = {'input_file': '', 'received_file': ''}
         self.stop_event = threading.Event()
         self.worker = None
+        self._last_input_devices = []
+        self._last_output_devices = []
+        self._devices_signature = None
+        self._auto_refresh_job = None
+        self.auto_refresh_interval_ms = 8000
+        self.auto_refresh_enabled = tk.BooleanVar(value=False)
         self.logger = UILogger(self.hw_log)
         self.plot_manager = PlotWindowManager(master, log=self.hw_log)
 
@@ -138,25 +144,79 @@ class AudioAnalysisToolkitApp:
     # ---------------------------------------------------------
     # DEVICE REFRESH
     # ---------------------------------------------------------
-    def _refresh_hw_devices(self):
+    def _refresh_hw_devices(self, from_timer: bool = False):
         if sd is None:
             self.hw_log("Sounddevice không khả dụng.")
             return
         try:
-            inputs, outputs = devices.list_devices()
-            self.cb_in['values'] = inputs
-            self.cb_out['values'] = outputs
+            inputs, outputs = devices.list_devices(raise_on_error=True)
+            signature = devices.get_devices_signature()
 
-            if inputs:
-                self.cb_in.current(0)
-                self.hw_input_dev.set(inputs[0])
-            if outputs:
-                self.cb_out.current(0)
-                self.hw_output_dev.set(outputs[0])
+            prev_in_sel = self.hw_input_dev.get()
+            prev_out_sel = self.hw_output_dev.get()
 
-            self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
+            added_in = [d for d in inputs if d not in self._last_input_devices]
+            removed_in = [d for d in self._last_input_devices if d not in inputs]
+            added_out = [d for d in outputs if d not in self._last_output_devices]
+            removed_out = [d for d in self._last_output_devices if d not in outputs]
+
+            changed = bool(added_in or removed_in or added_out or removed_out)
+            first_refresh = not self._devices_signature
+
+            if changed or first_refresh:
+                self.cb_in['values'] = inputs
+                self.cb_out['values'] = outputs
+
+                if added_in:
+                    self.hw_log(f"Added inputs: {', '.join(added_in)}")
+                if removed_in:
+                    self.hw_log(f"Removed inputs: {', '.join(removed_in)}")
+                if added_out:
+                    self.hw_log(f"Added outputs: {', '.join(added_out)}")
+                if removed_out:
+                    self.hw_log(f"Removed outputs: {', '.join(removed_out)}")
+
+                if prev_in_sel in inputs:
+                    self.hw_input_dev.set(prev_in_sel)
+                    self.cb_in.set(prev_in_sel)
+                elif inputs:
+                    self.cb_in.current(0)
+                    self.hw_input_dev.set(inputs[0])
+                    if prev_in_sel:
+                        self.hw_log(f"Input '{prev_in_sel}' không còn khả dụng, chuyển sang {inputs[0]}")
+
+                if prev_out_sel in outputs:
+                    self.hw_output_dev.set(prev_out_sel)
+                    self.cb_out.set(prev_out_sel)
+                elif outputs:
+                    self.cb_out.current(0)
+                    self.hw_output_dev.set(outputs[0])
+                    if prev_out_sel:
+                        self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
+
+                self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
+            else:
+                if not from_timer:
+                    self.hw_log("Danh sách thiết bị không đổi.")
+
+            self._last_input_devices = inputs
+            self._last_output_devices = outputs
+            self._devices_signature = signature
         except Exception as e:
             self.hw_log(f"Lỗi khi lấy thiết bị: {e}")
+
+    def _auto_refresh_tick(self):
+        if not self.auto_refresh_enabled.get():
+            return
+        self._refresh_hw_devices(from_timer=True)
+        self._auto_refresh_job = self.master.after(self.auto_refresh_interval_ms, self._auto_refresh_tick)
+
+    def _on_auto_refresh_toggle(self):
+        if self._auto_refresh_job:
+            self.master.after_cancel(self._auto_refresh_job)
+            self._auto_refresh_job = None
+        if self.auto_refresh_enabled.get():
+            self._auto_refresh_job = self.master.after(self.auto_refresh_interval_ms, self._auto_refresh_tick)
 
     # ---------------------------------------------------------
     def select_hw_loop_file(self):
@@ -203,6 +263,13 @@ class AudioAnalysisToolkitApp:
         self.cb_out.grid(row=0, column=3, sticky="w", padx=4)
 
         ttk.Button(dev_frame, text="Làm mới", command=self._refresh_hw_devices).grid(row=0, column=4, padx=6)
+
+        ttk.Checkbutton(
+            dev_frame,
+            text="Auto refresh devices",
+            variable=self.auto_refresh_enabled,
+            command=self._on_auto_refresh_toggle
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=4, pady=(2, 0))
 
         # PanedWindow
         paned = ttk.PanedWindow(tab_hw, orient="horizontal")
