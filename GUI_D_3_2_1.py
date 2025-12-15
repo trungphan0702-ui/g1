@@ -155,6 +155,10 @@ class AudioAnalysisToolkitApp:
     # DEVICE REFRESH
     # ---------------------------------------------------------
     def _refresh_hw_devices(self, from_timer: bool = False):
+        if self.master and threading.current_thread() is not threading.main_thread():
+            self.master.after(0, lambda: self._refresh_hw_devices(from_timer=from_timer))
+            return
+
         if sd is None:
             self.hw_log("Sounddevice không khả dụng.")
             return
@@ -204,10 +208,21 @@ class AudioAnalysisToolkitApp:
                     if prev_out_sel:
                         self.hw_log(f"Output '{prev_out_sel}' không còn khả dụng, chuyển sang {outputs[0]}")
 
-                self.hw_log("Đã làm mới danh sách thiết bị âm thanh.")
-            else:
-                if not from_timer:
-                    self.hw_log("Danh sách thiết bị không đổi.")
+            selected_in = self.hw_input_dev.get() or "(none)"
+            selected_out = self.hw_output_dev.get() or "(none)"
+
+            if changed or first_refresh:
+                self.hw_log(
+                    "Đã làm mới danh sách thiết bị âm thanh. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Chọn input: {selected_in}; chọn output: {selected_out}."
+                )
+            elif not from_timer:
+                self.hw_log(
+                    "Danh sách thiết bị không đổi. "
+                    f"Inputs: {len(inputs)}, Outputs: {len(outputs)}. "
+                    f"Chọn input: {selected_in}; chọn output: {selected_out}."
+                )
 
             self._last_input_devices = inputs
             self._last_output_devices = outputs
